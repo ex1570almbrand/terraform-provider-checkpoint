@@ -8,12 +8,12 @@ import (
 	"log"
 )
 
-func resourceManagementGroupMember() *schema.Resource {
+func resourceManagementGroupNetworkMember() *schema.Resource {
 	return &schema.Resource{
-		Create: createManagementGroupMember,
-		Read:   readManagementGroupMember,
-		Update: updateManagementGroupMember,
-		Delete: deleteManagementGroupMember,
+		Create: createManagementGroupNetworkMember,
+		Read:   readManagementGroupNetworkMember,
+		Update: updateManagementGroupNetworkMember,
+		Delete: deleteManagementGroupNetworkMember,
 		Importer: &schema.ResourceImporter{
 			State: schema.ImportStatePassthrough,
 		},
@@ -26,13 +26,13 @@ func resourceManagementGroupMember() *schema.Resource {
 			"member": {
 				Type:        schema.TypeString,
 				Required:    true,
-				Description: "Object name. The object to be added to a group",
+				Description: "Network object name. The object to be added to a group",
 			},
 		},
 	}
 }
 
-func createManagementGroupMember(d *schema.ResourceData, m interface{}) error {
+func createManagementGroupNetworkMember(d *schema.ResourceData, m interface{}) error {
 	client := m.(*checkpoint.ApiClient)
 
 	group := make(map[string]interface{})
@@ -44,7 +44,7 @@ func createManagementGroupMember(d *schema.ResourceData, m interface{}) error {
 		group["members"] = v.(string)
 	}
 
-	log.Println("Create Group Member - Map = ", group)
+	log.Println("Create Group Network Member - Map = ", group)
 
 	addGroupMemberRes, err := client.ApiCall("set-group", group, client.GetSessionID(), true, false)
 	if err != nil || !addGroupMemberRes.Success {
@@ -56,7 +56,7 @@ func createManagementGroupMember(d *schema.ResourceData, m interface{}) error {
 
 	groupRes := addGroupMemberRes.GetData()
 	membersJson := groupRes["members"].([]interface{})
-	if membersJson == nil && len(membersJson) > 0 {
+	if membersJson == nil && len(membersJson) == 0 {
 		return errors.New("No members in the set-group response")
 	}
 	firstMember := membersJson[0].(map[string]interface{})
@@ -66,10 +66,10 @@ func createManagementGroupMember(d *schema.ResourceData, m interface{}) error {
 
 	d.SetId(dId)
 
-	return readManagementGroup(d, m)
+	return readManagementGroupNetworkMember(d, m)
 }
 
-func readManagementGroupMember(d *schema.ResourceData, m interface{}) error {
+func readManagementGroupNetworkMember(d *schema.ResourceData, m interface{}) error {
 
 	client := m.(*checkpoint.ApiClient)
 
@@ -140,7 +140,7 @@ func readManagementGroupMember(d *schema.ResourceData, m interface{}) error {
 	return nil
 }
 
-func updateManagementGroupMember(d *schema.ResourceData, m interface{}) error {
+func updateManagementGroupNetworkMember(d *schema.ResourceData, m interface{}) error {
 
 	client := m.(*checkpoint.ApiClient)
 	group := make(map[string]interface{})
@@ -193,7 +193,7 @@ func updateManagementGroupMember(d *schema.ResourceData, m interface{}) error {
 	return readManagementGroup(d, m)
 }
 
-func deleteManagementGroupMember(d *schema.ResourceData, m interface{}) error {
+func deleteManagementGroupNetworkMember(d *schema.ResourceData, m interface{}) error {
 	client := m.(*checkpoint.ApiClient)
 	payload := map[string]interface{}{
 		"uid": d.Id(),
