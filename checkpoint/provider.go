@@ -61,6 +61,7 @@ func Provider() terraform.ResourceProvider {
 			"checkpoint_management_network":                                        resourceManagementNetwork(),
 			"checkpoint_management_wildcard":                                       resourceManagementWildcard(),
 			"checkpoint_management_group":                                          resourceManagementGroup(),
+			"checkpoint_management_group_member":                                   resourceManagementGroupMember(),
 			"checkpoint_management_address_range":                                  resourceManagementAddressRange(),
 			"checkpoint_management_multicast_address_range":                        resourceManagementMulticastAddressRange(),
 			"checkpoint_management_group_with_exclusion":                           resourceManagementGroupWithExclusion(),
