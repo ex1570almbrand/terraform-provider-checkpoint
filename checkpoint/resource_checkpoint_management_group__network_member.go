@@ -6,6 +6,7 @@ import (
 	checkpoint "github.com/CheckPointSW/cp-mgmt-api-go-sdk/APIFiles"
 	"github.com/hashicorp/terraform-plugin-sdk/helper/schema"
 	"log"
+	"strings"
 )
 
 func resourceManagementGroupNetworkMember() *schema.Resource {
@@ -73,8 +74,10 @@ func readManagementGroupNetworkMember(d *schema.ResourceData, m interface{}) err
 
 	client := m.(*checkpoint.ApiClient)
 
+	ids := strings.Split(d.Id(), "/")
+
 	payload := map[string]interface{}{
-		"uid": d.Id(), // TODO: split on "/" and take the first string
+		"uid": ids[0], // The first is the group object UID
 	}
 
 	showGroupRes, err := client.ApiCall("show-group", payload, client.GetSessionID(), true, false)
@@ -90,51 +93,27 @@ func readManagementGroupNetworkMember(d *schema.ResourceData, m interface{}) err
 		return fmt.Errorf(showGroupRes.ErrorMsg)
 	}
 
-	// TODO: Repeat the above for network member (or any member actuall)
-	// Problem: How do we get any object? Or we should change the names and code to only work with network objects
-
 	group := showGroupRes.GetData()
 
 	if v := group["name"]; v != nil {
 		_ = d.Set("name", v)
 	}
 
-	if v := group["comments"]; v != nil {
-		_ = d.Set("comments", v)
-	}
-
-	if v := group["color"]; v != nil {
-		_ = d.Set("color", v)
-	}
-
 	if group["members"] != nil {
 		membersJson := group["members"].([]interface{})
-		membersIds := make([]string, 0)
+		memberName := ""
 		if len(membersJson) > 0 {
-			// Create slice of members names
 			for _, member := range membersJson {
 				member := member.(map[string]interface{})
-				membersIds = append(membersIds, member["name"].(string))
+				if member["uid"].(string) == ids[1] {
+					// Set "member" to member name if and only if is part of the members array returned by the API
+					memberName = member["name"].(string)
+				}
 			}
 		}
-		_ = d.Set("members", membersIds)
+		_ = d.Set("member", memberName)
 	} else {
-		_ = d.Set("members", nil)
-	}
-
-	if group["tags"] != nil {
-		tagsJson := group["tags"].([]interface{})
-		var tagsIds = make([]string, 0)
-		if len(tagsJson) > 0 {
-			// Create slice of tag names
-			for _, tag := range tagsJson {
-				tag := tag.(map[string]interface{})
-				tagsIds = append(tagsIds, tag["name"].(string))
-			}
-		}
-		_ = d.Set("tags", tagsIds)
-	} else {
-		_ = d.Set("tags", nil)
+		_ = d.Set("member", nil)
 	}
 
 	return nil
