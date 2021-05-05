@@ -41,8 +41,10 @@ func createManagementGroupNetworkMember(d *schema.ResourceData, m interface{}) e
 	if v, ok := d.GetOk("name"); ok {
 		group["name"] = v.(string)
 	}
+	newMemberName := ""
 	if v, ok := d.GetOk("member"); ok {
 		group["members"] = v.(string)
+		newMemberName = v.(string)
 	}
 
 	log.Println("Create Group Network Member - Map = ", group)
@@ -60,10 +62,22 @@ func createManagementGroupNetworkMember(d *schema.ResourceData, m interface{}) e
 	if membersJson == nil && len(membersJson) == 0 {
 		return errors.New("No members in the set-group response")
 	}
-	firstMember := membersJson[0].(map[string]interface{})
+	memberUid := ""
+	if len(membersJson) > 0 {
+		for _, member := range membersJson {
+			member := member.(map[string]interface{})
+			if member["name"].(string) == newMemberName {
+				// Get the correct member UID as the response may contain other existing members as well
+				memberUid = member["uid"].(string)
+			}
+		}
+	}
+	if memberUid == "" {
+		return errors.New("New member not found in the set-group response")
+	}
 	groupUid := groupRes["uid"].(string)
 
-	dId := fmt.Sprintf("%s/%s", groupUid, firstMember["uid"].(string))
+	dId := fmt.Sprintf("%s/%s", groupUid, memberUid)
 
 	d.SetId(dId)
 
