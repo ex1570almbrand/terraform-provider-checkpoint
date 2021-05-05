@@ -34,54 +34,65 @@ func resourceManagementGroupNetworkMember() *schema.Resource {
 }
 
 func createManagementGroupNetworkMember(d *schema.ResourceData, m interface{}) error {
+	groupName := ""
+	if v, ok := d.GetOk("name"); ok {
+		groupName = v.(string)
+	}
+	memberName := ""
+	if v, ok := d.GetOk("member"); ok {
+		memberName = v.(string)
+	}
+
+	groupUid, memberUid, err := createGroupAndNetworkObjectRelationship(groupName, memberName, m)
+	if err == nil && len(groupUid) > 0 && len(memberUid) > 0 {
+		dId := fmt.Sprintf("%s/%s", groupUid, memberUid)
+		d.SetId(dId)
+		return readManagementGroupNetworkMember(d, m)
+	}
+	if err == nil {
+		return errors.New("Missing group UID or member UID in the response")
+	}
+	return err
+}
+
+func createGroupAndNetworkObjectRelationship(groupName string, noName string, m interface{}) (string, string, error) {
 	client := m.(*checkpoint.ApiClient)
 
 	group := make(map[string]interface{})
-
-	if v, ok := d.GetOk("name"); ok {
-		group["name"] = v.(string)
-	}
-	newMemberName := ""
-	if v, ok := d.GetOk("member"); ok {
-		group["members"] = v.(string)
-		newMemberName = v.(string)
-	}
+	group["name"] = groupName
+	group["members"] = noName
 
 	log.Println("Create Group Network Member - Map = ", group)
 
 	addGroupMemberRes, err := client.ApiCall("set-group", group, client.GetSessionID(), true, false)
 	if err != nil || !addGroupMemberRes.Success {
 		if addGroupMemberRes.ErrorMsg != "" {
-			return fmt.Errorf(addGroupMemberRes.ErrorMsg)
+			return "", "", fmt.Errorf(addGroupMemberRes.ErrorMsg)
 		}
-		return fmt.Errorf(err.Error())
+		return "", "", fmt.Errorf(err.Error())
 	}
 
 	groupRes := addGroupMemberRes.GetData()
 	membersJson := groupRes["members"].([]interface{})
 	if membersJson == nil && len(membersJson) == 0 {
-		return errors.New("No members in the set-group response")
+		return "", "", errors.New("No members in the set-group response")
 	}
 	memberUid := ""
 	if len(membersJson) > 0 {
 		for _, member := range membersJson {
 			member := member.(map[string]interface{})
-			if member["name"].(string) == newMemberName {
+			if member["name"].(string) == noName {
 				// Get the correct member UID as the response may contain other existing members as well
 				memberUid = member["uid"].(string)
 			}
 		}
 	}
 	if memberUid == "" {
-		return errors.New("New member not found in the set-group response")
+		return "", "", errors.New("New member not found in the set-group response")
 	}
 	groupUid := groupRes["uid"].(string)
 
-	dId := fmt.Sprintf("%s/%s", groupUid, memberUid)
-
-	d.SetId(dId)
-
-	return readManagementGroupNetworkMember(d, m)
+	return groupUid, memberUid, nil
 }
 
 func readManagementGroupNetworkMember(d *schema.ResourceData, m interface{}) error {
@@ -134,68 +145,71 @@ func readManagementGroupNetworkMember(d *schema.ResourceData, m interface{}) err
 }
 
 func updateManagementGroupNetworkMember(d *schema.ResourceData, m interface{}) error {
+	if d.HasChange("name") || d.HasChange("member") {
+		// Delete the current relationship if succeful set dId to "" -> So that state is updated with real world
+		ids := strings.Split(d.Id(), "/")
+		deleteErr := deleteGroupAndNetworkObjectRelationship(ids[0], ids[1], m)
+		if deleteErr == nil {
+			d.SetId("")
+			return deleteErr
+		}
+		// Create a new relationship and if successful set dId to new "<groupUID>/<networkObjectID>"
+		groupName := getCurrentOrChangedValue(d, "name")
+		memberName := getCurrentOrChangedValue(d, "member")
+		groupUid, memberUid, createErr := createGroupAndNetworkObjectRelationship(groupName, memberName, m)
+		if createErr == nil && len(groupUid) > 0 && len(memberUid) > 0 {
+			dId := fmt.Sprintf("%s/%s", groupUid, memberUid)
+			d.SetId(dId)
+			return readManagementGroupNetworkMember(d, m)
+		}
+		if createErr == nil {
+			return errors.New("Missing group UID or member UID in the response")
+		}
+		return createErr
+	}
+	// Do nothing if no changes are detected
+	return readManagementGroupNetworkMember(d, m)
+}
 
-	client := m.(*checkpoint.ApiClient)
+func getCurrentOrChangedValue(d *schema.ResourceData, paramName string) string {
+	if d.HasChange(paramName) {
+		_, newName := d.GetChange(paramName)
+		return newName.(string)
+	} else {
+		return d.Get("name").(string)
+	}
+}
+
+func deleteManagementGroupNetworkMember(d *schema.ResourceData, m interface{}) error {
+	ids := strings.Split(d.Id(), "/")
+
 	group := make(map[string]interface{})
 
-	if d.HasChange("name") {
-		oldName, newName := d.GetChange("name")
-		group["name"] = oldName.(string)
-		group["new-name"] = newName.(string)
-	} else {
-		group["name"] = d.Get("name")
+	group["uid"] = ids[0]
+	group["members"] = map[string]interface{}{"remove": ids[1]}
+
+	err := deleteGroupAndNetworkObjectRelationship(ids[0], ids[1], m)
+	if err == nil {
+		d.SetId("")
+		return nil
 	}
 
-	if ok := d.HasChange("members"); ok {
-		if v, ok := d.GetOk("members"); ok {
-			group["members"] = v.(*schema.Set).List()
-		} else {
-			oldMembers, _ := d.GetChange("members")
-			group["members"] = map[string]interface{}{"remove": oldMembers.(*schema.Set).List()}
-		}
-	}
-	if ok := d.HasChange("tags"); ok {
-		if v, ok := d.GetOk("tags"); ok {
-			group["tags"] = v.(*schema.Set).List()
-		} else {
-			oldTags, _ := d.GetChange("tags")
-			group["tags"] = map[string]interface{}{"remove": oldTags.(*schema.Set).List()}
-		}
-	}
+	return err
+}
 
-	if ok := d.HasChange("comments"); ok {
-		group["comments"] = d.Get("comments")
-	}
-	if ok := d.HasChange("color"); ok {
-		group["color"] = d.Get("color")
-	}
+func deleteGroupAndNetworkObjectRelationship(groupUid string, noUid string, m interface{}) error {
+	client := m.(*checkpoint.ApiClient)
 
-	if v, ok := d.GetOkExists("ignore_errors"); ok {
-		group["ignore-errors"] = v.(bool)
-	}
-	if v, ok := d.GetOkExists("ignore_warnings"); ok {
-		group["ignore-warnings"] = v.(bool)
-	}
+	group := make(map[string]interface{})
 
-	log.Println("Update Group - Map = ", group)
+	group["uid"] = groupUid
+	group["members"] = map[string]interface{}{"remove": noUid}
+
+	log.Println("Removing Group Network object relationship - Map = ", group)
 	setGroupRes, _ := client.ApiCall("set-group", group, client.GetSessionID(), true, false)
 	if !setGroupRes.Success {
 		return fmt.Errorf(setGroupRes.ErrorMsg)
 	}
-
-	return readManagementGroup(d, m)
-}
-
-func deleteManagementGroupNetworkMember(d *schema.ResourceData, m interface{}) error {
-	client := m.(*checkpoint.ApiClient)
-	payload := map[string]interface{}{
-		"uid": d.Id(),
-	}
-	deleteGroupRes, _ := client.ApiCall("delete-group", payload, client.GetSessionID(), true, false)
-	if !deleteGroupRes.Success {
-		return fmt.Errorf(deleteGroupRes.ErrorMsg)
-	}
-	d.SetId("")
 
 	return nil
 }
