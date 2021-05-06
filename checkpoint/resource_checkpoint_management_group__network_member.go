@@ -24,10 +24,13 @@ func resourceManagementGroupNetworkMember() *schema.Resource {
 				Required:    true,
 				Description: "Existing group object name. Identifies the group to add members to",
 			},
-			"member": {
-				Type:        schema.TypeString,
-				Required:    true,
-				Description: "Network object name. The object to be added to a group",
+			"members": {
+				Type:        schema.TypeSet,
+				Optional:    true,
+				Description: "Collection of Network objects identified by the name or UID.",
+				Elem: &schema.Schema{
+					Type: schema.TypeString,
+				},
 			},
 		},
 	}
@@ -38,14 +41,14 @@ func createManagementGroupNetworkMember(d *schema.ResourceData, m interface{}) e
 	if v, ok := d.GetOk("name"); ok {
 		groupName = v.(string)
 	}
-	memberName := ""
-	if v, ok := d.GetOk("member"); ok {
-		memberName = v.(string)
+	members := make([]interface{}, 0)
+	if val, ok := d.GetOk("members"); ok {
+		members = val.(*schema.Set).List()
 	}
 
-	groupUid, memberUid, err := createGroupAndNetworkObjectRelationship(groupName, memberName, m)
-	if err == nil && len(groupUid) > 0 && len(memberUid) > 0 {
-		dId := fmt.Sprintf("%s/%s", groupUid, memberUid)
+	groupUid, err := createGroupAndNetworkObjectRelationship(groupName, members, m)
+	if err == nil && len(groupUid) > 0 {
+		dId := fmt.Sprintf("%s/network_object_members", groupUid)
 		d.SetId(dId)
 		return readManagementGroupNetworkMember(d, m)
 	}
@@ -55,44 +58,27 @@ func createManagementGroupNetworkMember(d *schema.ResourceData, m interface{}) e
 	return err
 }
 
-func createGroupAndNetworkObjectRelationship(groupName string, noName string, m interface{}) (string, string, error) {
+func createGroupAndNetworkObjectRelationship(groupName string, members []interface{}, m interface{}) (string, error) {
 	client := m.(*checkpoint.ApiClient)
 
 	group := make(map[string]interface{})
 	group["name"] = groupName
-	group["members"] = noName
+	group["members"] = members
 
-	log.Println("Create Group Network Member - Map = ", group)
+	log.Println("Create Group Network Members - Map = ", group)
 
 	addGroupMemberRes, err := client.ApiCall("set-group", group, client.GetSessionID(), true, false)
 	if err != nil || !addGroupMemberRes.Success {
 		if addGroupMemberRes.ErrorMsg != "" {
-			return "", "", fmt.Errorf(addGroupMemberRes.ErrorMsg)
+			return "", fmt.Errorf(addGroupMemberRes.ErrorMsg)
 		}
-		return "", "", fmt.Errorf(err.Error())
+		return "", fmt.Errorf(err.Error())
 	}
 
 	groupRes := addGroupMemberRes.GetData()
-	membersJson := groupRes["members"].([]interface{})
-	if membersJson == nil && len(membersJson) == 0 {
-		return "", "", errors.New("No members in the set-group response")
-	}
-	memberUid := ""
-	if len(membersJson) > 0 {
-		for _, member := range membersJson {
-			member := member.(map[string]interface{})
-			if member["name"].(string) == noName {
-				// Get the correct member UID as the response may contain other existing members as well
-				memberUid = member["uid"].(string)
-			}
-		}
-	}
-	if memberUid == "" {
-		return "", "", errors.New("New member not found in the set-group response")
-	}
 	groupUid := groupRes["uid"].(string)
 
-	return groupUid, memberUid, nil
+	return groupUid, nil
 }
 
 func readManagementGroupNetworkMember(d *schema.ResourceData, m interface{}) error {
@@ -126,39 +112,41 @@ func readManagementGroupNetworkMember(d *schema.ResourceData, m interface{}) err
 
 	if group["members"] != nil {
 		membersJson := group["members"].([]interface{})
-		memberName := ""
+		membersIds := make([]string, 0)
 		if len(membersJson) > 0 {
+			// Create slice of members names
 			for _, member := range membersJson {
 				member := member.(map[string]interface{})
-				if member["uid"].(string) == ids[1] {
-					// Set "member" to member name if and only if is part of the members array returned by the API
-					memberName = member["name"].(string)
-				}
+				membersIds = append(membersIds, member["name"].(string))
 			}
 		}
-		_ = d.Set("member", memberName)
+		_ = d.Set("members", membersIds)
 	} else {
-		_ = d.Set("member", nil)
+		_ = d.Set("members", nil)
 	}
 
 	return nil
 }
 
 func updateManagementGroupNetworkMember(d *schema.ResourceData, m interface{}) error {
-	if d.HasChange("name") || d.HasChange("member") {
-		// Delete the current relationship if succeful set dId to "" -> So that state is updated with real world
+	if d.HasChange("name") { // This is basically a delete and create opretations, since the UID changes
 		ids := strings.Split(d.Id(), "/")
-		deleteErr := deleteGroupAndNetworkObjectRelationship(ids[0], ids[1], m)
-		if deleteErr == nil {
+		members := d.Get("members")
+		deleteErr := deleteGroupAndNetworkObjectRelationship(ids[0], members.(*schema.Set).List(), m)
+		if deleteErr != nil {
 			d.SetId("")
 			return deleteErr
 		}
-		// Create a new relationship and if successful set dId to new "<groupUID>/<networkObjectID>"
-		groupName := getCurrentOrChangedValue(d, "name")
-		memberName := getCurrentOrChangedValue(d, "member")
-		groupUid, memberUid, createErr := createGroupAndNetworkObjectRelationship(groupName, memberName, m)
-		if createErr == nil && len(groupUid) > 0 && len(memberUid) > 0 {
-			dId := fmt.Sprintf("%s/%s", groupUid, memberUid)
+
+		groupName := ""
+		if d.HasChange("name") {
+			_, newName := d.GetChange("name")
+			groupName = newName.(string)
+		}
+		_, newMembers := d.GetChange("members")
+		groupUid, createErr := createGroupAndNetworkObjectRelationship(groupName, newMembers.(*schema.Set).List(), m)
+		if createErr == nil && len(groupUid) > 0 {
+			dId := fmt.Sprintf("%s/network_object_members", groupUid)
 			d.SetId(dId)
 			return readManagementGroupNetworkMember(d, m)
 		}
@@ -166,29 +154,37 @@ func updateManagementGroupNetworkMember(d *schema.ResourceData, m interface{}) e
 			return errors.New("Missing group UID or member UID in the response")
 		}
 		return createErr
-	}
-	// Do nothing if no changes are detected
-	return readManagementGroupNetworkMember(d, m)
-}
 
-func getCurrentOrChangedValue(d *schema.ResourceData, paramName string) string {
-	if d.HasChange(paramName) {
-		_, newName := d.GetChange(paramName)
-		return newName.(string)
-	} else {
-		return d.Get("name").(string)
+	} else if d.HasChange("members") { // This is a regular change
+		client := m.(*checkpoint.ApiClient)
+		group := make(map[string]interface{})
+
+		group["name"] = d.Get("name")
+
+		if ok := d.HasChange("members"); ok {
+			if v, ok := d.GetOk("members"); ok {
+				group["members"] = v.(*schema.Set).List()
+			} else {
+				oldMembers, _ := d.GetChange("members")
+				group["members"] = map[string]interface{}{"remove": oldMembers.(*schema.Set).List()}
+			}
+		}
+
+		log.Println("Update Group - Map = ", group)
+		setGroupRes, _ := client.ApiCall("set-group", group, client.GetSessionID(), true, false)
+		if !setGroupRes.Success {
+			return fmt.Errorf(setGroupRes.ErrorMsg)
+		}
 	}
+
+	return readManagementGroupNetworkMember(d, m)
 }
 
 func deleteManagementGroupNetworkMember(d *schema.ResourceData, m interface{}) error {
 	ids := strings.Split(d.Id(), "/")
+	members := d.Get("members")
+	err := deleteGroupAndNetworkObjectRelationship(ids[0], members.(*schema.Set).List(), m)
 
-	group := make(map[string]interface{})
-
-	group["uid"] = ids[0]
-	group["members"] = map[string]interface{}{"remove": ids[1]}
-
-	err := deleteGroupAndNetworkObjectRelationship(ids[0], ids[1], m)
 	if err == nil {
 		d.SetId("")
 		return nil
@@ -197,13 +193,13 @@ func deleteManagementGroupNetworkMember(d *schema.ResourceData, m interface{}) e
 	return err
 }
 
-func deleteGroupAndNetworkObjectRelationship(groupUid string, noUid string, m interface{}) error {
+func deleteGroupAndNetworkObjectRelationship(groupUid string, members []interface{}, m interface{}) error {
 	client := m.(*checkpoint.ApiClient)
 
 	group := make(map[string]interface{})
 
 	group["uid"] = groupUid
-	group["members"] = map[string]interface{}{"remove": noUid}
+	group["members"] = map[string]interface{}{"remove": members}
 
 	log.Println("Removing Group Network object relationship - Map = ", group)
 	setGroupRes, _ := client.ApiCall("set-group", group, client.GetSessionID(), true, false)
